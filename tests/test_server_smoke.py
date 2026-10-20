@@ -48,7 +48,7 @@ def test_hermes_ask_invokes_client() -> None:
     fn = tool.fn
     result = fn(prompt="hi", session_id=None, toolsets=None)
     assert result == "the answer"
-    client.ask.assert_called_once_with("hi", session_id=None, toolsets=None)
+    client.ask.assert_called_once_with("hi", session_id=None, toolsets=None, profile=None)
 
 
 def test_hermes_ask_propagates_hermes_error() -> None:
@@ -291,7 +291,7 @@ def test_sync_mode_unchanged() -> None:
     assert ask_tool is not None
     out = ask_tool.fn(prompt="hi", session_id="s1", toolsets=None)
     assert out == "direct answer"
-    client.ask.assert_called_once_with("hi", session_id="s1", toolsets=None)
+    client.ask.assert_called_once_with("hi", session_id="s1", toolsets=None, profile=None)
 
 
 def test_async_mode_forwards_session_id_and_toolsets_to_worker() -> None:
@@ -316,7 +316,75 @@ def test_async_mode_forwards_session_id_and_toolsets_to_worker() -> None:
     )
     _await_job(jobs, submit_payload["job_id"])
 
-    client.ask.assert_called_once_with("hi", session_id="sess-async", toolsets=["hermes-telegram"])
+    client.ask.assert_called_once_with(
+        "hi", session_id="sess-async", toolsets=["hermes-telegram"], profile=None
+    )
+
+
+def test_hermes_ask_forwards_profile_sync() -> None:
+    """`profile` must reach client.ask verbatim — routing (and the
+    allowlist check) happen inside the client, but the server must not
+    drop the argument on the floor."""
+    cfg = _config()
+    client = MagicMock()
+    client.ask.return_value = "profile answer"
+    mcp = build_app(cfg, client)
+    ask_tool = mcp._tool_manager.get_tool("hermes_ask")
+    assert ask_tool is not None
+    out = ask_tool.fn(prompt="hi", profile="mgr-plattform")
+    assert out == "profile answer"
+    client.ask.assert_called_once_with("hi", session_id=None, toolsets=None, profile="mgr-plattform")
+
+
+def test_hermes_ask_async_job_records_profile() -> None:
+    """The job record carries the requested profile so hermes_check can
+    show which gateway profile an async task was sent to."""
+    cfg = _config()
+    client = MagicMock()
+    client.ask.return_value = "ok"
+
+    jobs = JobStore()
+    mcp = build_app(cfg, client, jobs=jobs)
+    ask_tool = mcp._tool_manager.get_tool("hermes_ask")
+    check_tool = mcp._tool_manager.get_tool("hermes_check")
+    assert ask_tool is not None
+    assert check_tool is not None
+
+    submit_payload = json.loads(
+        ask_tool.fn(prompt="hi", profile="planer", async_mode=True)
+    )
+    _await_job(jobs, submit_payload["job_id"])
+
+    job = jobs.get(submit_payload["job_id"])
+    assert job is not None
+    assert job.profile == "planer"
+    checked = json.loads(check_tool.fn(job_id=submit_payload["job_id"]))
+    assert checked["profile"] == "planer"
+
+    client.ask.assert_called_once_with("hi", session_id=None, toolsets=None, profile="planer")
+
+
+def test_hermes_ask_async_default_profile_is_none() -> None:
+    """Omitting profile keeps the record's profile unset (default gateway)."""
+    cfg = _config()
+    client = MagicMock()
+    client.ask.return_value = "ok"
+
+    jobs = JobStore()
+    mcp = build_app(cfg, client, jobs=jobs)
+    ask_tool = mcp._tool_manager.get_tool("hermes_ask")
+    assert ask_tool is not None
+
+    submit_payload = json.loads(ask_tool.fn(prompt="hi", async_mode=True))
+    _await_job(jobs, submit_payload["job_id"])
+
+    job = jobs.get(submit_payload["job_id"])
+    assert job is not None
+    assert job.profile is None
+    check_tool = mcp._tool_manager.get_tool("hermes_check")
+    assert check_tool is not None
+    checked = json.loads(check_tool.fn(job_id=submit_payload["job_id"]))
+    assert "profile" not in checked
 
 
 def test_build_app_registers_hermes_cancel() -> None:

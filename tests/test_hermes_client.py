@@ -178,3 +178,96 @@ def test_ask_does_not_log_prompt_at_info(
         _client().ask("VERY-PRIVATE-PROMPT-CONTENT-XYZ")
     for rec in caplog.records:
         assert "VERY-PRIVATE-PROMPT-CONTENT-XYZ" not in rec.message
+
+
+# --- profile routing ------------------------------------------------------------
+
+
+def _profile_client() -> HermesClient:
+    return HermesClient(
+        api_url="http://127.0.0.1:8642",
+        api_key="k" * 32,
+        model="hermes-agent",
+        timeout_seconds=60,
+        profile_routes={
+            "mgr-plattform": "http://127.0.0.1:8642/p/mgr-plattform",
+            "planer": "http://127.0.0.1:8642/p/planer",
+        },
+        profile_keys={"mgr-plattform": "p" * 32},
+    )
+
+
+def test_ask_routes_profile_to_profile_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_post(url: str, **kwargs: object) -> httpx.Response:
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return httpx.Response(200, json=_ok_response("ok"))
+
+    monkeypatch.setattr("hermes_mcp.hermes_client.httpx.post", fake_post)
+    out = _profile_client().ask("ping", profile="mgr-plattform")
+    assert out == "ok"
+    assert captured["url"] == "http://127.0.0.1:8642/p/mgr-plattform/v1/chat/completions"
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["headers"]["Authorization"] == "Bearer " + "p" * 32  # type: ignore[index]
+
+
+def test_ask_profile_falls_back_to_base_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """planer has a route but no HERMES_API_KEY_PLANER -> base key is used."""
+
+    def fake_post(url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(200, json=_ok_response("ok"))
+
+    monkeypatch.setattr("hermes_mcp.hermes_client.httpx.post", fake_post)
+    client = HermesClient(
+        api_url="http://127.0.0.1:8642",
+        api_key="k" * 32,
+        model="hermes-agent",
+        timeout_seconds=60,
+        profile_routes={"planer": "http://127.0.0.1:8642/p/planer"},
+    )
+    assert client.ask("ping", profile="planer") == "ok"
+
+
+def test_ask_profile_default_and_none_hit_base_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    urls: list[str] = []
+
+    def fake_post(url: str, **kwargs: object) -> httpx.Response:
+        urls.append(url)
+        return httpx.Response(200, json=_ok_response("ok"))
+
+    monkeypatch.setattr("hermes_mcp.hermes_client.httpx.post", fake_post)
+    client = _profile_client()
+    client.ask("ping")
+    client.ask("ping", profile=None)
+    client.ask("ping", profile="default")
+    assert urls == ["http://127.0.0.1:8642/v1/chat/completions"] * 3
+
+
+def test_ask_unknown_profile_rejected_without_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The allowlist is the boundary: unknown names fail fast and must not
+    silently fall back to the base endpoint."""
+
+    def fail_post(*args: object, **kwargs: object) -> httpx.Response:
+        raise AssertionError("httpx.post must not be called for unknown profiles")
+
+    monkeypatch.setattr("hermes_mcp.hermes_client.httpx.post", fail_post)
+    with pytest.raises(HermesError, match="unknown profile 'mgr-voice'"):
+        _profile_client().ask("ping", profile="mgr-voice")
+
+
+def test_ask_profile_without_routes_rejects_everything_but_default() -> None:
+    """A bridge configured without HERMES_PROFILE_ROUTES stays default-only:
+    any profile name is rejected (fail closed)."""
+    with pytest.raises(HermesError, match="unknown profile 'planer'"):
+        _client().ask("ping", profile="planer")

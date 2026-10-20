@@ -271,3 +271,93 @@ def test_bearer_token_too_short_rejected() -> None:
 def test_bearer_token_whitespace_only_treated_as_unset() -> None:
     cfg = Config.from_env({**VALID_BASE, "MCP_BEARER_TOKEN": "   "})
     assert cfg.mcp_bearer_token is None
+
+
+# --- HERMES_PROFILE_ROUTES / HERMES_API_KEY_<PROFILE> ---------------------------
+
+
+def test_profile_routes_default_empty() -> None:
+    cfg = Config.from_env(VALID_BASE)
+    assert cfg.profile_routes == {}
+    assert cfg.profile_keys == {}
+
+
+def test_profile_routes_parsed() -> None:
+    cfg = Config.from_env(
+        {
+            **VALID_BASE,
+            "HERMES_PROFILE_ROUTES": (
+                "mgr-plattform=http://127.0.0.1:8642/p/mgr-plattform,"
+                "planer=http://127.0.0.1:8642/p/planer/"
+            ),
+        }
+    )
+    assert cfg.profile_routes == {
+        "mgr-plattform": "http://127.0.0.1:8642/p/mgr-plattform",
+        "planer": "http://127.0.0.1:8642/p/planer",
+    }
+
+
+def test_profile_routes_default_entry_ignored() -> None:
+    """'default' always means the base HERMES_API_URL; listing it is a
+    no-op (warned), not an error."""
+    cfg = Config.from_env(
+        {
+            **VALID_BASE,
+            "HERMES_PROFILE_ROUTES": "default=http://127.0.0.1:8642,planer=http://127.0.0.1:8642/p/planer",
+        }
+    )
+    assert cfg.profile_routes == {"planer": "http://127.0.0.1:8642/p/planer"}
+
+
+def test_profile_routes_duplicate_name_rejected() -> None:
+    with pytest.raises(ConfigError, match="duplicate profile name"):
+        Config.from_env(
+            {
+                **VALID_BASE,
+                "HERMES_PROFILE_ROUTES": (
+                    "planer=http://127.0.0.1:8642/p/planer,planer=http://127.0.0.1:8642/p/other"
+                ),
+            }
+        )
+
+
+def test_profile_routes_bad_format_rejected() -> None:
+    with pytest.raises(ConfigError, match="name=url"):
+        Config.from_env({**VALID_BASE, "HERMES_PROFILE_ROUTES": "just-a-name"})
+
+
+def test_profile_routes_bad_scheme_rejected() -> None:
+    with pytest.raises(ConfigError, match="must be http:// or https://"):
+        Config.from_env(
+            {**VALID_BASE, "HERMES_PROFILE_ROUTES": "planer=ftp://127.0.0.1:8642/p/planer"}
+        )
+
+
+def test_profile_keys_parsed_with_dash_mapping() -> None:
+    env = {
+        **VALID_BASE,
+        "HERMES_PROFILE_ROUTES": (
+            "mgr-plattform=http://127.0.0.1:8642/p/mgr-plattform,"
+            "planer=http://127.0.0.1:8642/p/planer"
+        ),
+        "HERMES_API_KEY_MGR_PLATTFORM": "p" * 32,
+        "HERMES_API_KEY_PLANER": "q" * 32,
+    }
+    cfg = Config.from_env(env)
+    assert cfg.profile_keys == {
+        "mgr-plattform": "p" * 32,
+        "planer": "q" * 32,
+    }
+
+
+def test_profile_key_without_route_rejected() -> None:
+    """A key for an unlisted profile is almost certainly a typo'd name or a
+    leftover key; fail fast instead of silently ignoring it."""
+    with pytest.raises(ConfigError, match="not listed in HERMES_PROFILE_ROUTES"):
+        Config.from_env(
+            {
+                **VALID_BASE,
+                "HERMES_API_KEY_TYPO": "p" * 32,
+            }
+        )
