@@ -4,6 +4,7 @@ and confirm the tool works when the underlying HermesClient is mocked.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
@@ -30,6 +31,12 @@ def _config() -> Config:
     return Config.from_env(VALID_ENV)
 
 
+def _askfn(tool, **kwargs) -> str:
+    """hermes_ask is an async tool handler (it must not block the event
+    loop); run it to completion for these sync tests."""
+    return asyncio.run(tool.fn(**kwargs))
+
+
 def test_build_app_registers_hermes_ask() -> None:
     cfg = _config()
     client = MagicMock()
@@ -45,8 +52,7 @@ def test_hermes_ask_invokes_client() -> None:
     mcp = build_app(cfg, client)
     tool = mcp._tool_manager.get_tool("hermes_ask")
     assert tool is not None
-    fn = tool.fn
-    result = fn(prompt="hi", session_id=None, toolsets=None)
+    result = _askfn(tool, prompt="hi", session_id=None, toolsets=None)
     assert result == "the answer"
     client.ask.assert_called_once_with("hi", session_id=None, toolsets=None, profile=None)
 
@@ -59,7 +65,7 @@ def test_hermes_ask_propagates_hermes_error() -> None:
     tool = mcp._tool_manager.get_tool("hermes_ask")
     assert tool is not None
     with pytest.raises(HermesError, match="hermes exited 2"):
-        tool.fn(prompt="hi", session_id=None, toolsets=None)
+        _askfn(tool, prompt="hi", session_id=None, toolsets=None)
 
 
 def test_oauth_routes_present() -> None:
@@ -186,7 +192,7 @@ def test_async_mode_returns_pending_job_id_immediately() -> None:
     ask_tool = mcp._tool_manager.get_tool("hermes_ask")
     assert ask_tool is not None
 
-    out = ask_tool.fn(prompt="hi", session_id=None, toolsets=None, async_mode=True)
+    out = _askfn(ask_tool, prompt="hi", session_id=None, toolsets=None, async_mode=True)
     payload = json.loads(out)
     assert payload["status"] == "pending"
     assert "job_id" in payload
@@ -209,7 +215,7 @@ def test_hermes_check_returns_completed_result() -> None:
     assert check_tool is not None
 
     submit_payload = json.loads(
-        ask_tool.fn(prompt="hi", session_id=None, toolsets=None, async_mode=True)
+        _askfn(ask_tool, prompt="hi", session_id=None, toolsets=None, async_mode=True)
     )
     _await_job(jobs, submit_payload["job_id"])
 
@@ -232,7 +238,7 @@ def test_hermes_check_returns_failed_on_hermes_error() -> None:
     assert check_tool is not None
 
     submit_payload = json.loads(
-        ask_tool.fn(prompt="hi", session_id=None, toolsets=None, async_mode=True)
+        _askfn(ask_tool, prompt="hi", session_id=None, toolsets=None, async_mode=True)
     )
     _await_job(jobs, submit_payload["job_id"])
 
@@ -259,7 +265,7 @@ def test_hermes_check_redacts_unexpected_exception_message() -> None:
     assert check_tool is not None
 
     submit_payload = json.loads(
-        ask_tool.fn(prompt="hi", session_id=None, toolsets=None, async_mode=True)
+        _askfn(ask_tool, prompt="hi", session_id=None, toolsets=None, async_mode=True)
     )
     _await_job(jobs, submit_payload["job_id"])
 
@@ -289,7 +295,7 @@ def test_sync_mode_unchanged() -> None:
     mcp = build_app(cfg, client)
     ask_tool = mcp._tool_manager.get_tool("hermes_ask")
     assert ask_tool is not None
-    out = ask_tool.fn(prompt="hi", session_id="s1", toolsets=None)
+    out = _askfn(ask_tool, prompt="hi", session_id="s1", toolsets=None)
     assert out == "direct answer"
     client.ask.assert_called_once_with("hi", session_id="s1", toolsets=None, profile=None)
 
@@ -307,7 +313,7 @@ def test_async_mode_forwards_session_id_and_toolsets_to_worker() -> None:
     assert ask_tool is not None
 
     submit_payload = json.loads(
-        ask_tool.fn(
+        _askfn(ask_tool, 
             prompt="hi",
             session_id="sess-async",
             toolsets=["hermes-telegram"],
@@ -331,7 +337,7 @@ def test_hermes_ask_forwards_profile_sync() -> None:
     mcp = build_app(cfg, client)
     ask_tool = mcp._tool_manager.get_tool("hermes_ask")
     assert ask_tool is not None
-    out = ask_tool.fn(prompt="hi", profile="mgr-plattform")
+    out = _askfn(ask_tool, prompt="hi", profile="mgr-plattform")
     assert out == "profile answer"
     client.ask.assert_called_once_with("hi", session_id=None, toolsets=None, profile="mgr-plattform")
 
@@ -351,7 +357,7 @@ def test_hermes_ask_async_job_records_profile() -> None:
     assert check_tool is not None
 
     submit_payload = json.loads(
-        ask_tool.fn(prompt="hi", profile="planer", async_mode=True)
+        _askfn(ask_tool, prompt="hi", profile="planer", async_mode=True)
     )
     _await_job(jobs, submit_payload["job_id"])
 
@@ -375,7 +381,7 @@ def test_hermes_ask_async_default_profile_is_none() -> None:
     ask_tool = mcp._tool_manager.get_tool("hermes_ask")
     assert ask_tool is not None
 
-    submit_payload = json.loads(ask_tool.fn(prompt="hi", async_mode=True))
+    submit_payload = json.loads(_askfn(ask_tool, prompt="hi", async_mode=True))
     _await_job(jobs, submit_payload["job_id"])
 
     job = jobs.get(submit_payload["job_id"])
@@ -419,7 +425,7 @@ def test_hermes_cancel_releases_in_flight_job() -> None:
     check_tool = mcp._tool_manager.get_tool("hermes_check")
     assert ask_tool is not None and cancel_tool is not None and check_tool is not None
 
-    submit = json.loads(ask_tool.fn(prompt="x", async_mode=True))
+    submit = json.loads(_askfn(ask_tool, prompt="x", async_mode=True))
     assert started.wait(timeout=1.0)
 
     cancel_payload = json.loads(cancel_tool.fn(job_id=submit["job_id"]))
@@ -445,7 +451,7 @@ def test_hermes_cancel_is_noop_on_completed_job() -> None:
     cancel_tool = mcp._tool_manager.get_tool("hermes_cancel")
     assert ask_tool is not None and cancel_tool is not None
 
-    submit = json.loads(ask_tool.fn(prompt="x", async_mode=True))
+    submit = json.loads(_askfn(ask_tool, prompt="x", async_mode=True))
     _await_job(jobs, submit["job_id"])
 
     payload = json.loads(cancel_tool.fn(job_id=submit["job_id"]))
@@ -484,8 +490,8 @@ def test_hermes_reset_clears_all_jobs_and_reports_counts() -> None:
     assert ask_tool is not None and reset_tool is not None and check_tool is not None
 
     # Submit two jobs and let them complete.
-    a = json.loads(ask_tool.fn(prompt="a", async_mode=True))
-    b = json.loads(ask_tool.fn(prompt="b", async_mode=True))
+    a = json.loads(_askfn(ask_tool, prompt="a", async_mode=True))
+    b = json.loads(_askfn(ask_tool, prompt="b", async_mode=True))
     _await_job(jobs, a["job_id"])
     _await_job(jobs, b["job_id"])
 
@@ -520,11 +526,11 @@ def test_submit_works_after_reset_with_fresh_job_id() -> None:
     check_tool = mcp._tool_manager.get_tool("hermes_check")
     assert ask_tool is not None and reset_tool is not None and check_tool is not None
 
-    first = json.loads(ask_tool.fn(prompt="a", async_mode=True))
+    first = json.loads(_askfn(ask_tool, prompt="a", async_mode=True))
     _await_job(jobs, first["job_id"])
     reset_tool.fn()
 
-    second = json.loads(ask_tool.fn(prompt="b", async_mode=True))
+    second = json.loads(_askfn(ask_tool, prompt="b", async_mode=True))
     assert second["status"] == "pending"
     assert second["job_id"] != first["job_id"]
     _await_job(jobs, second["job_id"])
@@ -558,7 +564,7 @@ def test_hermes_reset_clears_in_flight_job_without_blocking() -> None:
     check_tool = mcp._tool_manager.get_tool("hermes_check")
     assert ask_tool is not None and reset_tool is not None and check_tool is not None
 
-    submit = json.loads(ask_tool.fn(prompt="x", async_mode=True))
+    submit = json.loads(_askfn(ask_tool, prompt="x", async_mode=True))
     assert started.wait(timeout=1.0)
 
     payload = json.loads(reset_tool.fn())
@@ -595,13 +601,48 @@ def test_async_mode_surfaces_capacity_error() -> None:
 
     client.ask.side_effect = hold
 
-    first = json.loads(ask_tool.fn(prompt="a", async_mode=True))
+    first = json.loads(_askfn(ask_tool, prompt="a", async_mode=True))
     assert first["status"] == "pending"
     assert started.wait(timeout=1.0)
 
     # Second submission must raise — store is at capacity (1) while job #1 runs.
     with pytest.raises(RuntimeError, match="capacity"):
-        ask_tool.fn(prompt="b", async_mode=True)
+        _askfn(ask_tool, prompt="b", async_mode=True)
 
     release.set()
     _await_job(jobs, first["job_id"])
+
+
+def test_sync_ask_does_not_block_event_loop() -> None:
+    """Regression (2026-10-20 freeze): a slow SYNC ask must run on a worker
+    thread so the event loop stays responsive for other requests. Without
+    the offload, the second sleep cannot run until the ask completes."""
+    cfg = _config()
+    client = MagicMock()
+    release = threading.Event()
+
+    def slow_ask(*args, **kwargs):
+        release.wait(timeout=5)
+        return "late"
+
+    client.ask.side_effect = slow_ask
+    mcp = build_app(cfg, client)
+    ask_tool = mcp._tool_manager.get_tool("hermes_ask")
+    assert ask_tool is not None
+
+    async def scenario() -> str:
+        task = asyncio.ensure_future(
+            ask_tool.fn(prompt="hi", session_id=None, toolsets=None)
+        )
+        await asyncio.sleep(0.05)  # ask now waiting on the worker thread
+        t0 = time.monotonic()
+        await asyncio.sleep(0.1)  # only runs if the loop is free
+        elapsed = time.monotonic() - t0
+        assert elapsed < 0.5, f"event loop blocked for {elapsed:.2f}s"
+        release.set()
+        return await task
+
+    assert asyncio.run(scenario()) == "late"
+    client.ask.assert_called_once_with(
+        "hi", session_id=None, toolsets=None, profile=None
+    )

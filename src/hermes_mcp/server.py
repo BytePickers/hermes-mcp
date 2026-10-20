@@ -15,6 +15,7 @@ release / clean-slate).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
@@ -299,7 +300,7 @@ def build_app(
     job_store = jobs if jobs is not None else JobStore()
 
     @mcp.tool(description=_TOOL_DESCRIPTION)
-    def hermes_ask(
+    async def hermes_ask(
         prompt: str,
         session_id: str | None = None,
         profile: str | None = None,
@@ -308,8 +309,16 @@ def build_app(
     ) -> str:
         # HermesError propagates; FastMCP wraps any Exception in ToolError.
         if not async_mode:
-            return client.ask(
-                prompt, session_id=session_id, toolsets=toolsets, profile=profile
+            # FastMCP executes sync tool handlers directly on the event loop
+            # (no thread offload), so a slow gateway call would block ALL
+            # requests — including unrelated sessions — for up to
+            # hermes_request_timeout_seconds. Offload to a worker thread.
+            return await asyncio.to_thread(
+                client.ask,
+                prompt,
+                session_id=session_id,
+                toolsets=toolsets,
+                profile=profile,
             )
 
         job = job_store.create(
