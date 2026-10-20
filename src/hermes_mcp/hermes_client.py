@@ -36,6 +36,8 @@ class HermesClient:
         api_key: str,
         model: str,
         timeout_seconds: int,
+        profile_routes: dict[str, str] | None = None,
+        profile_keys: dict[str, str] | None = None,
     ) -> None:
         if not api_url:
             raise ValueError("api_url is required")
@@ -45,22 +47,49 @@ class HermesClient:
         self._api_key = api_key
         self._model = model
         self._timeout = timeout_seconds
+        # Multi-profile routing (optional). Each configured profile name is
+        # allowed in `ask(profile=...)` and maps to its own endpoint; a
+        # profile without its own key falls back to the base key.
+        self._profile_endpoints = {
+            name: url.rstrip("/") + "/v1/chat/completions"
+            for name, url in (profile_routes or {}).items()
+        }
+        self._profile_keys = dict(profile_keys or {})
 
     def ask(
         self,
         prompt: str,
         session_id: str | None = None,
         toolsets: list[str] | None = None,
+        profile: str | None = None,
     ) -> str:
         """Send `prompt` to the gateway and return its final response text.
 
         If `session_id` is provided, it is forwarded as `X-Hermes-Session-Id`
         so the gateway threads the call into an existing session.
 
+        If `profile` is provided, the request is routed to that profile's
+        endpoint (from the HERMES_PROFILE_ROUTES allowlist) with its own key
+        if one is configured. `None` and `"default"` both mean the base
+        gateway URL. Unknown profile names are rejected — the allowlist is
+        the security boundary, not a convention.
+
         `toolsets` is accepted for backward-compat but ignored — toolset
         selection now lives in Hermes config (`platform_toolsets.api_server`).
         """
         del toolsets
+
+        if profile in (None, "default"):
+            endpoint = self._endpoint
+            api_key = self._api_key
+        else:
+            endpoint = self._profile_endpoints.get(profile)
+            if endpoint is None:
+                raise HermesError(
+                    f"unknown profile {profile!r}: not in the HERMES_PROFILE_ROUTES "
+                    "allowlist configured on this server"
+                )
+            api_key = self._profile_keys.get(profile) or self._api_key
 
         body = {
             "model": self._model,
@@ -68,7 +97,7 @@ class HermesClient:
             "stream": False,
         }
         headers = {
-            "Authorization": f"Bearer {self._api_key}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
         if session_id:
@@ -86,7 +115,7 @@ class HermesClient:
 
         try:
             response = httpx.post(
-                self._endpoint,
+                endpoint,
                 json=body,
                 headers=headers,
                 timeout=self._timeout,
