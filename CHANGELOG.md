@@ -8,9 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Optional per-profile routing for multi-profile gateways.** New env var
+  `HERMES_PROFILE_ROUTES` (comma-separated `name=url` entries) turns one
+  bridge into a single connector for several Hermes profiles: `hermes_ask`
+  gains an optional `profile` argument that routes the request to that
+  profile's endpoint (e.g. the `/p/<name>/` route of a Hermes multi-profile
+  gateway). The list is the allowlist — `default` always means the base
+  `HERMES_API_URL` (no entry needed), unknown names fail fast with a clear
+  error and never fall back silently. Per-profile keys via
+  `HERMES_API_KEY_<NAME>` (`-` becomes `_` in the env var name); profiles
+  without their own key use the base `HERMES_API_KEY`. Async jobs record
+  the requested profile in the job payload shown by `hermes_check`.
+  Deployments that don't set `HERMES_PROFILE_ROUTES` behave exactly as
+  before.
 - **Static bearer-token auth as an alternative to OAuth.** New optional
   env var `MCP_BEARER_TOKEN` (32+ chars). When set, the server accepts
-  `Authorization: Bearer <MCP_BEARER_TOKEN>` directly at /mcp, in
+  `Authorization: Bearer <MCP_B...EN>` directly at /mcp, in
   addition to OAuth-issued access tokens. Both methods coexist on the
   same instance — Claude / Claude.ai keep using OAuth; clients with no
   OAuth UI (Codex desktop's custom-MCP form, Cursor's `headers` block)

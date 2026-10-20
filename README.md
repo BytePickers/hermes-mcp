@@ -144,7 +144,7 @@ Then restart `hermes-mcp`. Clients that can't send a `client_secret` (Codex, Cur
 
 The MCP server exposes four tools:
 
-### `hermes_ask(prompt, session_id?, toolsets?, async_mode?)`
+### `hermes_ask(prompt, session_id?, profile?, toolsets?, async_mode?)`
 
 Delegates a task to Hermes. Use it for anything the calling LLM cannot do directly:
 
@@ -158,6 +158,22 @@ Delegates a task to Hermes. Use it for anything the calling LLM cannot do direct
 Pass the same `session_id` across calls within one chat to let Hermes build on previous steps (draft → refine → save). It is forwarded as the `X-Hermes-Session-Id` header so Hermes threads the call into an existing session.
 
 The `toolsets` argument is accepted for backward compatibility but is currently ignored — toolset selection now lives in your Hermes config (`platform_toolsets.api_server`). Set it there to match the Telegram surface (typically `[hermes-telegram]`) so MCP clients get the same tools the Telegram path does.
+
+#### `profile` — multiple Hermes profiles from one bridge
+
+If the server is configured with `HERMES_PROFILE_ROUTES` (see [Configuration](#configuration)), `hermes_ask` accepts an optional `profile` argument that routes the request to that profile's own gateway endpoint — for example the `/p/<name>/` route of a Hermes multi-profile gateway. `session_id`, `async_mode`, and `hermes_check` work per call as usual; the profile only decides *where* the request lands.
+
+- `profile` omitted, `None`, or `"default"` → base `HERMES_API_URL` (unchanged behavior).
+- Any other name → must be listed in the server's `HERMES_PROFILE_ROUTES`; unknown names fail fast with a clear error (the list is the allowlist — nothing silently routes elsewhere).
+- Per-profile API keys via `HERMES_API_KEY_<NAME>` (`-` → `_` in the env var name); profiles without their own key fall back to the base `HERMES_API_KEY`.
+
+Example server config reaching two profiles of one gateway:
+
+```bash
+HERMES_PROFILE_ROUTES=mgr-plattform=http://127.0.0.1:8642/p/mgr-plattform,planer=http://127.0.0.1:8642/p/planer
+HERMES_API_KEY_MGR_PLATTFORM=...   # optional, else base key is used
+HERMES_API_KEY_PLANER=...
+```
 
 #### Async mode for long-running tasks
 
