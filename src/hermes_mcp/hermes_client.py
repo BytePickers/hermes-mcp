@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 
 import httpx
@@ -159,6 +160,14 @@ class HermesClient:
         chunks: list[str] = []
         finish_reason: str | None = None
         saw_done = False
+        ceiling_hit = threading.Event()
+        watchdog: threading.Timer | None = None
+
+        def ceiling_error() -> HermesError:
+            return HermesError(
+                "hermes gateway turn exceeded "
+                f"HERMES_REQUEST_MAX_SECONDS ({self._max_seconds}s)"
+            )
 
         try:
             with httpx.stream(
@@ -169,6 +178,22 @@ class HermesClient:
                 timeout=self._timeout_obj,
                 follow_redirects=False,
             ) as response:
+                if self._max_seconds:
+                    # The ceiling must also survive a silent phase that outlasts
+                    # the per-read budget: when the deadline passes, close the
+                    # stream from the timer thread. The blocked read then fails
+                    # and the error below is attributed to the ceiling.
+                    def _on_ceiling() -> None:
+                        ceiling_hit.set()
+                        try:
+                            response.close()
+                        except Exception:  # noqa: BLE001 - best effort
+                            pass
+
+                    timer = threading.Timer(float(self._max_seconds), _on_ceiling)
+                    timer.daemon = True
+                    timer.start()
+                    watchdog = timer
                 if response.status_code == 401:
                     raise HermesError(
                         "hermes gateway rejected the API key (401). "
@@ -193,11 +218,11 @@ class HermesClient:
                     # Checked on EVERY line, before any parsing: keepalives and
                     # unparsable frames are traffic too, and an operator's hard
                     # ceiling must not be escaped by a chatty gateway.
-                    if self._max_seconds and (time.monotonic() - started) > self._max_seconds:
-                        raise HermesError(
-                            "hermes gateway turn exceeded "
-                            f"HERMES_REQUEST_MAX_SECONDS ({self._max_seconds}s)"
-                        )
+                    if ceiling_hit.is_set() or (
+                        self._max_seconds
+                        and (time.monotonic() - started) > self._max_seconds
+                    ):
+                        raise ceiling_error()
                     if not line:
                         continue
                     if line.startswith(":"):
@@ -239,18 +264,26 @@ class HermesClient:
                 f"{WRITE_TIMEOUT_SECONDS:g}s (write/pool timeout)"
             ) from exc
         except httpx.TimeoutException as exc:
-            if self._max_seconds and (time.monotonic() - started) >= self._max_seconds:
-                # The read budget was cut down to the ceiling; a timeout here
-                # means the turn hit the operator's wall, not merely a silence.
-                raise HermesError(
-                    "hermes gateway turn exceeded "
-                    f"HERMES_REQUEST_MAX_SECONDS ({self._max_seconds}s)"
-                ) from exc
+            if ceiling_hit.is_set() or (
+                self._max_seconds and (time.monotonic() - started) >= self._max_seconds
+            ):
+                # The read budget was cut down to the ceiling and/or the watchdog
+                # already closed the stream: this is the operator's wall, not
+                # merely a silence.
+                raise ceiling_error() from exc
             raise HermesError(
                 f"hermes gateway sent no events for {self._timeout}s"
             ) from exc
         except httpx.HTTPError as exc:
+            if ceiling_hit.is_set():
+                raise ceiling_error() from exc
             raise HermesError(f"hermes gateway request failed: {exc}") from exc
+        finally:
+            if watchdog is not None:
+                watchdog.cancel()
+
+        if ceiling_hit.is_set():
+            raise ceiling_error()
 
         if not saw_done and finish_reason is None:
             # The gateway closed the stream without a terminator: the answer may

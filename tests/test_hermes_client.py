@@ -312,6 +312,12 @@ class _SSEHandler(BaseHTTPRequestHandler):
             self._write(_delta("", finish="stop"))
             self._write("data: [DONE]")
             return
+        if mode == "burst_then_silent":
+            # One event, then a long silence: the watchdog must end the turn at
+            # the ceiling, not the (longer) inactivity limit.
+            self._write(_delta("start "))
+            time.sleep(5.0)
+            return
         if mode == "chatty_keepalive":
             # Only comment lines: a chatty gateway that never produces content.
             deadline = time.monotonic() + 8.0
@@ -403,6 +409,23 @@ def test_max_seconds_is_a_hard_wall_on_a_silent_gateway(sse_server: str) -> None
     with pytest.raises(HermesError, match="exceeded HERMES_REQUEST_MAX_SECONDS"):
         client.ask("ping")
     assert time.monotonic() - started < 3.0
+
+
+@pytest.mark.parametrize("sse_server", ["burst_then_silent"], indirect=True)
+def test_max_seconds_survives_a_follow_up_silence(sse_server: str) -> None:
+    """After the first event the next read must not be allowed to block for the
+    full inactivity limit — the watchdog ends the turn at the ceiling."""
+    client = HermesClient(
+        api_url=sse_server,
+        api_key="k" * 32,
+        model="hermes-agent",
+        timeout_seconds=6,
+        max_seconds=2,
+    )
+    started = time.monotonic()
+    with pytest.raises(HermesError, match="exceeded HERMES_REQUEST_MAX_SECONDS"):
+        client.ask("ping")
+    assert time.monotonic() - started < 5.0
 
 
 def test_max_seconds_bounds_the_blocking_read(monkeypatch: pytest.MonkeyPatch) -> None:
