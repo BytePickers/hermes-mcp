@@ -72,12 +72,18 @@ class HermesClient:
         # for the next byte/event from the gateway. It is handed to httpx as
         # `read=`, never as a request-wide timeout.
         self._timeout = timeout_seconds
-        # Optional hard ceiling for the whole turn (0 = off). Enforced between
-        # events, so it can only trip on a turn that is still streaming.
+        # Optional hard ceiling for the whole turn (0 = off). Enforced two ways so
+        # it is a real wall: the blocking read never waits longer than the
+        # remaining budget, and between events the elapsed time is checked.
         self._max_seconds = max_seconds
+        read_limit = float(timeout_seconds)
+        if max_seconds:
+            # A single blocking read must not outlive the ceiling — otherwise a
+            # silent gateway could carry the turn past the operator's wall.
+            read_limit = min(read_limit, float(max_seconds))
         self._timeout_obj = httpx.Timeout(
             connect=CONNECT_TIMEOUT_SECONDS,
-            read=float(timeout_seconds),
+            read=read_limit,
             write=WRITE_TIMEOUT_SECONDS,
             pool=POOL_TIMEOUT_SECONDS,
         )
@@ -233,6 +239,13 @@ class HermesClient:
                 f"{WRITE_TIMEOUT_SECONDS:g}s (write/pool timeout)"
             ) from exc
         except httpx.TimeoutException as exc:
+            if self._max_seconds and (time.monotonic() - started) >= self._max_seconds:
+                # The read budget was cut down to the ceiling; a timeout here
+                # means the turn hit the operator's wall, not merely a silence.
+                raise HermesError(
+                    "hermes gateway turn exceeded "
+                    f"HERMES_REQUEST_MAX_SECONDS ({self._max_seconds}s)"
+                ) from exc
             raise HermesError(
                 f"hermes gateway sent no events for {self._timeout}s"
             ) from exc

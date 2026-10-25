@@ -388,10 +388,34 @@ def test_ask_enforces_optional_max_seconds_ceiling(sse_server: str) -> None:
         client.ask("ping")
 
 
+@pytest.mark.parametrize("sse_server", ["silent"], indirect=True)
+def test_max_seconds_is_a_hard_wall_on_a_silent_gateway(sse_server: str) -> None:
+    """A silent gateway must hit the operator's ceiling within that budget, not
+    after the (longer) inactivity limit."""
+    client = HermesClient(
+        api_url=sse_server,
+        api_key="k" * 32,
+        model="hermes-agent",
+        timeout_seconds=30,
+        max_seconds=1,
+    )
+    started = time.monotonic()
+    with pytest.raises(HermesError, match="exceeded HERMES_REQUEST_MAX_SECONDS"):
+        client.ask("ping")
+    assert time.monotonic() - started < 3.0
+
+
+def test_max_seconds_bounds_the_blocking_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+    _install_stream(monkeypatch, _FakeResponse(200, ["data: [DONE]"]), captured=captured)
+    _client(timeout=60, max_seconds=5).ask("ping")
+    timeout = captured["kwargs"]["timeout"]  # type: ignore[index]
+    assert isinstance(timeout, httpx.Timeout)
+    assert timeout.read == 5.0
+
+
 @pytest.mark.parametrize("sse_server", ["chatty_keepalive"], indirect=True)
 def test_max_seconds_ceiling_cannot_be_escaped_with_keepalives(sse_server: str) -> None:
-    """A gateway that only sends `: keepalive` is still traffic — the ceiling
-    has to trip on it, not just on content deltas."""
     client = HermesClient(
         api_url=sse_server,
         api_key="k" * 32,

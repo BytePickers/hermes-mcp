@@ -18,8 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `hermes gateway sent no events for Ns`, and a connect-timeout is reported
   separately (`could not be reached within …`).
 - New optional `HERMES_REQUEST_MAX_SECONDS` (default `0` = off): a hard
-  ceiling for one turn, checked between events, for operators who want a wall
-  on top of the inactivity limit.
+  ceiling for one turn (the blocking read never outlives it and the elapsed
+  time is checked between events), for operators who want a wall on top of the
+  inactivity limit.
 - The answer is assembled from the SSE deltas (`choices[0].delta.content`);
   `: keepalive` comment lines and `data: [DONE]` are handled and never leak
   into the returned text.
