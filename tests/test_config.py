@@ -119,6 +119,26 @@ def test_request_timeout_validated() -> None:
         Config.from_env({**VALID_BASE, "HERMES_REQUEST_TIMEOUT_SECONDS": "0"})
 
 
+def test_request_max_seconds_defaults_to_zero() -> None:
+    cfg = Config.from_env(VALID_BASE)
+    assert cfg.hermes_request_max_seconds == 0
+
+
+def test_request_max_seconds_parsed() -> None:
+    cfg = Config.from_env({**VALID_BASE, "HERMES_REQUEST_MAX_SECONDS": "1800"})
+    assert cfg.hermes_request_max_seconds == 1800
+
+
+def test_negative_request_max_seconds_rejected() -> None:
+    with pytest.raises(ConfigError, match="HERMES_REQUEST_MAX_SECONDS must be 0"):
+        Config.from_env({**VALID_BASE, "HERMES_REQUEST_MAX_SECONDS": "-5"})
+
+
+def test_non_numeric_request_max_seconds_rejected() -> None:
+    with pytest.raises(ConfigError, match="HERMES_REQUEST_MAX_SECONDS must be an integer"):
+        Config.from_env({**VALID_BASE, "HERMES_REQUEST_MAX_SECONDS": "lots"})
+
+
 def test_allowed_hosts_parsed() -> None:
     cfg = Config.from_env(
         {**VALID_BASE, "MCP_ALLOWED_HOSTS": "hermes.example.com,foo.trycloudflare.com"}
