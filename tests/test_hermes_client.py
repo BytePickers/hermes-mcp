@@ -222,6 +222,22 @@ def test_ask_translates_transport_error(monkeypatch: pytest.MonkeyPatch) -> None
         _client().ask("ping")
 
 
+def test_ask_reports_write_timeout_separately(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Write/pool timeouts mean "could not be sent", not "gateway stayed
+    silent" — the two need different diagnostics."""
+    _install_stream(monkeypatch, raise_exc=httpx.WriteTimeout("stuck"))
+    with pytest.raises(HermesError, match="could not be sent"):
+        _client().ask("ping")
+
+
+def test_ask_rejects_truncated_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stream that ends without `[DONE]` and without `finish_reason` is a
+    truncated answer — it must fail, not return a silently shortened reply."""
+    _install_stream(monkeypatch, _FakeResponse(200, [_delta("half an ans")]))
+    with pytest.raises(HermesError, match="closed the stream before the answer was complete"):
+        _client().ask("ping")
+
+
 # --- timeout semantics ---------------------------------------------------------
 
 
@@ -296,6 +312,14 @@ class _SSEHandler(BaseHTTPRequestHandler):
             self._write(_delta("", finish="stop"))
             self._write("data: [DONE]")
             return
+        if mode == "chatty_keepalive":
+            # Only comment lines: a chatty gateway that never produces content.
+            deadline = time.monotonic() + 8.0
+            while time.monotonic() < deadline:
+                if not self._write(": keepalive"):
+                    return
+                time.sleep(0.2)
+            return
         # "forever"
         deadline = time.monotonic() + 8.0
         i = 0
@@ -362,6 +386,23 @@ def test_ask_enforces_optional_max_seconds_ceiling(sse_server: str) -> None:
     )
     with pytest.raises(HermesError, match="exceeded HERMES_REQUEST_MAX_SECONDS"):
         client.ask("ping")
+
+
+@pytest.mark.parametrize("sse_server", ["chatty_keepalive"], indirect=True)
+def test_max_seconds_ceiling_cannot_be_escaped_with_keepalives(sse_server: str) -> None:
+    """A gateway that only sends `: keepalive` is still traffic — the ceiling
+    has to trip on it, not just on content deltas."""
+    client = HermesClient(
+        api_url=sse_server,
+        api_key="k" * 32,
+        model="hermes-agent",
+        timeout_seconds=5,
+        max_seconds=1,
+    )
+    started = time.monotonic()
+    with pytest.raises(HermesError, match="exceeded HERMES_REQUEST_MAX_SECONDS"):
+        client.ask("ping")
+    assert time.monotonic() - started < 3.0
 
 
 # --- privacy invariant ---------------------------------------------------------

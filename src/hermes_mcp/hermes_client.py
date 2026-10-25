@@ -184,6 +184,14 @@ class HermesClient:
                     )
 
                 for line in response.iter_lines():
+                    # Checked on EVERY line, before any parsing: keepalives and
+                    # unparsable frames are traffic too, and an operator's hard
+                    # ceiling must not be escaped by a chatty gateway.
+                    if self._max_seconds and (time.monotonic() - started) > self._max_seconds:
+                        raise HermesError(
+                            "hermes gateway turn exceeded "
+                            f"HERMES_REQUEST_MAX_SECONDS ({self._max_seconds}s)"
+                        )
                     if not line:
                         continue
                     if line.startswith(":"):
@@ -214,15 +222,15 @@ class HermesClient:
                                 chunks.append(piece)
                         if choice.get("finish_reason"):
                             finish_reason = str(choice["finish_reason"])
-                    if self._max_seconds and (time.monotonic() - started) > self._max_seconds:
-                        raise HermesError(
-                            "hermes gateway turn exceeded "
-                            f"HERMES_REQUEST_MAX_SECONDS ({self._max_seconds}s)"
-                        )
         except httpx.ConnectTimeout as exc:
             raise HermesError(
                 "hermes gateway could not be reached within "
                 f"{CONNECT_TIMEOUT_SECONDS:g}s"
+            ) from exc
+        except (httpx.WriteTimeout, httpx.PoolTimeout) as exc:
+            raise HermesError(
+                f"hermes gateway request could not be sent within "
+                f"{WRITE_TIMEOUT_SECONDS:g}s (write/pool timeout)"
             ) from exc
         except httpx.TimeoutException as exc:
             raise HermesError(
@@ -230,6 +238,15 @@ class HermesClient:
             ) from exc
         except httpx.HTTPError as exc:
             raise HermesError(f"hermes gateway request failed: {exc}") from exc
+
+        if not saw_done and finish_reason is None:
+            # The gateway closed the stream without a terminator: the answer may
+            # be truncated. Fail like the old non-streaming path did instead of
+            # handing back a silently shortened reply.
+            raise HermesError(
+                "hermes gateway closed the stream before the answer was complete "
+                f"(no [DONE], no finish_reason; {len(''.join(chunks))} chars received)"
+            )
 
         content = "".join(chunks)
         if not saw_done:
