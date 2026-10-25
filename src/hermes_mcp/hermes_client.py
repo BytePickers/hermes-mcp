@@ -167,12 +167,31 @@ class HermesClient:
         saw_done = False
         ceiling_hit = threading.Event()
         watchdog: threading.Timer | None = None
+        holder: dict[str, httpx.Response] = {}
 
         def ceiling_error() -> HermesError:
             return HermesError(
                 "hermes gateway turn exceeded "
                 f"HERMES_REQUEST_MAX_SECONDS ({self._max_seconds}s)"
             )
+
+        if self._max_seconds:
+            # The ceiling has to cover the whole call, so the watchdog starts
+            # before the request. It closes the response as soon as one exists;
+            # the phase budgets are capped at the same value, and the flag is
+            # re-checked right after the response arrives.
+            def _on_ceiling() -> None:
+                ceiling_hit.set()
+                pending = holder.get("response")
+                if pending is not None:
+                    try:
+                        pending.close()
+                    except Exception:  # noqa: BLE001 - best effort
+                        pass
+
+            watchdog = threading.Timer(float(self._max_seconds), _on_ceiling)
+            watchdog.daemon = True
+            watchdog.start()
 
         try:
             with httpx.stream(
@@ -183,25 +202,9 @@ class HermesClient:
                 timeout=self._timeout_obj,
                 follow_redirects=False,
             ) as response:
-                if self._max_seconds:
-                    # The ceiling must also survive a silent phase that outlasts
-                    # the per-read budget: when the deadline passes, close the
-                    # stream from the timer thread. The blocked read then fails
-                    # and the error below is attributed to the ceiling.
-                    def _on_ceiling() -> None:
-                        ceiling_hit.set()
-                        try:
-                            response.close()
-                        except Exception:  # noqa: BLE001 - best effort
-                            pass
-
-                    timer = threading.Timer(
-                        max(0.05, float(self._max_seconds) - (time.monotonic() - started)),
-                        _on_ceiling,
-                    )
-                    timer.daemon = True
-                    timer.start()
-                    watchdog = timer
+                holder["response"] = response
+                if ceiling_hit.is_set():
+                    raise ceiling_error()
                 if response.status_code == 401:
                     raise HermesError(
                         "hermes gateway rejected the API key (401). "

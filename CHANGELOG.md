@@ -18,11 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `hermes gateway sent no events for Ns`, and a connect-timeout is reported
   separately (`could not be reached within …`).
 - New optional `HERMES_REQUEST_MAX_SECONDS` (default `0` = off): a hard
-  ceiling for the streaming part of one turn — the read budget is capped at it
-  and a watchdog closes the stream when the deadline passes, so neither a
-  silent phase nor a chatty keepalive stream can carry the turn past the wall.
-  The connect/write/pool budgets are capped at the same value. `0` means no
-  ceiling (the default).
+  ceiling for one turn. A watchdog starts before the request and closes the
+  stream when the deadline passes, the read budget is capped at it, and so are
+  the connect/write/pool budgets — neither a silent phase, a chatty keepalive
+  stream nor a slow connection setup can carry the turn past the wall. `0`
+  means no ceiling (the default).
 - The answer is assembled from the SSE deltas (`choices[0].delta.content`);
   `: keepalive` comment lines and `data: [DONE]` are handled and never leak
   into the returned text.
