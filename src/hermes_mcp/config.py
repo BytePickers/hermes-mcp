@@ -60,6 +60,10 @@ class Config:
     hermes_api_key: str = field(repr=False)
     hermes_model: str
     hermes_request_timeout_seconds: int
+    # Hard ceiling for one agentic turn in seconds; 0 means "no ceiling".
+    # `hermes_request_timeout_seconds` above bounds the SILENCE between two
+    # gateway events, this bounds the whole turn for operators who want a wall.
+    hermes_request_max_seconds: int
     bind_host: str
     bind_port: int
     allowed_hosts: tuple[str, ...]
@@ -142,6 +146,19 @@ class Config:
         if request_timeout <= 0:
             raise ConfigError(
                 f"HERMES_REQUEST_TIMEOUT_SECONDS must be positive, got {request_timeout}"
+            )
+
+        try:
+            request_max = int(e.get("HERMES_REQUEST_MAX_SECONDS", "0"))
+        except ValueError as exc:
+            raise ConfigError(
+                "HERMES_REQUEST_MAX_SECONDS must be an integer, got "
+                f"{e.get('HERMES_REQUEST_MAX_SECONDS')!r}"
+            ) from exc
+        if request_max < 0:
+            raise ConfigError(
+                "HERMES_REQUEST_MAX_SECONDS must be 0 (no ceiling) or positive, "
+                f"got {request_max}"
             )
 
         allowed_hosts_raw = (e.get("MCP_ALLOWED_HOSTS") or "").strip()
@@ -286,6 +303,7 @@ class Config:
             hermes_api_key=hermes_api_key,
             hermes_model=hermes_model,
             hermes_request_timeout_seconds=request_timeout,
+            hermes_request_max_seconds=request_max,
             bind_host=bind_host,
             bind_port=port,
             allowed_hosts=allowed_hosts,
