@@ -73,20 +73,25 @@ class HermesClient:
         # for the next byte/event from the gateway. It is handed to httpx as
         # `read=`, never as a request-wide timeout.
         self._timeout = timeout_seconds
-        # Optional hard ceiling for the whole turn (0 = off). Enforced two ways so
-        # it is a real wall: the blocking read never waits longer than the
-        # remaining budget, and between events the elapsed time is checked.
+        # Optional hard ceiling for the whole turn (0 = off). It has to cover the
+        # entire call — connection setup included — so every individual budget is
+        # capped at it and a watchdog closes the stream when the deadline passes.
         self._max_seconds = max_seconds
         read_limit = float(timeout_seconds)
+        self._connect_timeout = CONNECT_TIMEOUT_SECONDS
+        self._write_timeout = WRITE_TIMEOUT_SECONDS
+        self._pool_timeout = POOL_TIMEOUT_SECONDS
         if max_seconds:
-            # A single blocking read must not outlive the ceiling — otherwise a
-            # silent gateway could carry the turn past the operator's wall.
-            read_limit = min(read_limit, float(max_seconds))
+            ceiling = float(max_seconds)
+            read_limit = min(read_limit, ceiling)
+            self._connect_timeout = min(self._connect_timeout, ceiling)
+            self._write_timeout = min(self._write_timeout, ceiling)
+            self._pool_timeout = min(self._pool_timeout, ceiling)
         self._timeout_obj = httpx.Timeout(
-            connect=CONNECT_TIMEOUT_SECONDS,
+            connect=self._connect_timeout,
             read=read_limit,
-            write=WRITE_TIMEOUT_SECONDS,
-            pool=POOL_TIMEOUT_SECONDS,
+            write=self._write_timeout,
+            pool=self._pool_timeout,
         )
         # Multi-profile routing (optional). Each configured profile name is
         # allowed in `ask(profile=...)` and maps to its own endpoint; a
@@ -190,7 +195,10 @@ class HermesClient:
                         except Exception:  # noqa: BLE001 - best effort
                             pass
 
-                    timer = threading.Timer(float(self._max_seconds), _on_ceiling)
+                    timer = threading.Timer(
+                        max(0.05, float(self._max_seconds) - (time.monotonic() - started)),
+                        _on_ceiling,
+                    )
                     timer.daemon = True
                     timer.start()
                     watchdog = timer
@@ -256,12 +264,12 @@ class HermesClient:
         except httpx.ConnectTimeout as exc:
             raise HermesError(
                 "hermes gateway could not be reached within "
-                f"{CONNECT_TIMEOUT_SECONDS:g}s"
+                f"{self._connect_timeout:g}s"
             ) from exc
         except (httpx.WriteTimeout, httpx.PoolTimeout) as exc:
             raise HermesError(
-                f"hermes gateway request could not be sent within "
-                f"{WRITE_TIMEOUT_SECONDS:g}s (write/pool timeout)"
+                "hermes gateway request could not be sent within "
+                f"{self._write_timeout:g}s (write/pool timeout)"
             ) from exc
         except httpx.TimeoutException as exc:
             if ceiling_hit.is_set() or (

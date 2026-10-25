@@ -435,6 +435,20 @@ def test_max_seconds_bounds_the_blocking_read(monkeypatch: pytest.MonkeyPatch) -
     timeout = captured["kwargs"]["timeout"]  # type: ignore[index]
     assert isinstance(timeout, httpx.Timeout)
     assert timeout.read == 5.0
+    # The ceiling covers the whole call, setup phases included.
+    assert timeout.connect == 5.0
+    assert timeout.write == 5.0
+    assert timeout.pool == 5.0
+
+
+def test_max_seconds_does_not_touch_budgets_when_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+    _install_stream(monkeypatch, _FakeResponse(200, ["data: [DONE]"]), captured=captured)
+    _client(timeout=60, max_seconds=0).ask("ping")
+    timeout = captured["kwargs"]["timeout"]  # type: ignore[index]
+    assert isinstance(timeout, httpx.Timeout)
+    assert timeout.read == 60.0
+    assert timeout.connect == CONNECT_TIMEOUT_SECONDS
 
 
 @pytest.mark.parametrize("sse_server", ["chatty_keepalive"], indirect=True)
